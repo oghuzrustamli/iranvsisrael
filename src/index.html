@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Israel-Iran Conflict Map</title>
+    <!-- Replace Leaflet with Mapbox GL JS -->
+    <link href='https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css' rel='stylesheet' />
+    <link rel="stylesheet" href="../css/style.css">
+    <!-- Add Autocomplete CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tarekraafat/autocomplete.js@10.2.7/dist/css/autoComplete.min.css">
+</head>
+<body>
+    <nav class="side-navbar">
+        <button class="menu-toggle">
+            <div class="hamburger">
+                <span></span>
+            </div>
+        </button>
+        <ul>
+            <li>
+                <a href="#" id="latest-updates-link">
+                    <span class="icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0M3.124 7.5A8.969 8.969 0 0 1 5.292 3m13.416 0a8.969 8.969 0 0 1 2.168 4.5" />
+                        </svg>
+                    </span>
+                    <span class="text">Latest Updates</span>
+                </a>
+            </li>
+            <li>
+                <a href="#" id="refresh-news-link">
+                    <span class="icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                        </svg>
+                    </span>
+                    <span class="text">Refresh News</span>
+                </a>
+            </li>
+            <li>
+                <a href="#" id="info-link">
+                    <span class="icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
+                        </svg>
+                    </span>
+                    <span class="text">Info</span>
+                </a>
+            </li>
+            <li>
+                <a href="#" id="add-incident-link">
+                    <span class="icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                        </svg>
+                    </span>
+                    <span class="text">Add Incident</span>
+                </a>
+            </li>
+        </ul>
+    </nav>
+
+    <div class="container">
+        <div id="map"></div>
+        
+        <div class="news-container" id="news-section">
+            <h2>Latest Updates</h2>
+            <div id="auto-news-feed"></div>
+        </div>
+
+        <div class="info-container" id="info-section">
+            <h2>General Information</h2>
+            <div class="info-content">
+                <div class="info-card israel-stats">
+                    <h3>Israel</h3>
+                    <div class="stat-row">
+                        <span class="label">Cities attacked:</span>
+                        <span class="value" id="israel-cities-count">0</span>
+                    </div>
+                    <div class="cities-list">
+                        <h4>Cities:</h4>
+                        <ul id="israel-cities-list"></ul>
+                    </div>
+                </div>
+
+                <div class="info-card iran-stats">
+                    <h3>Iran</h3>
+                    <div class="stat-row">
+                        <span class="label">Cities attacked:</span>
+                        <span class="value" id="iran-cities-count">0</span>
+                    </div>
+                    <div class="cities-list">
+                        <h4>Cities:</h4>
+                        <ul id="iran-cities-list"></ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="data-entry-form" id="data-entry-form">
+            <h2>Add New Incident</h2>
+            <form id="incident-form">
+                <div class="form-row">
+                    <div class="form-group half">
+                        <label for="country">Attacking Country:</label>
+                        <select id="country" name="country" required>
+                            <option value="1">Israel</option>
+                            <option value="2">Iran</option>
+                        </select>
+                    </div>
+                    <div class="form-group half">
+                        <label for="incident-date">Date:</label>
+                        <input type="date" id="incident-date" name="incident-date" required>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="target-city">Target City:</label>
+                        <input type="text" id="target-city" name="target-city" list="cities-list" required>
+                        <datalist id="cities-list">
+                            <!-- Will be populated by JavaScript -->
+                        </datalist>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="specific-target">Specific Target Location:</label>
+                        <input type="text" id="specific-target" name="specific-target" placeholder="Enter specific target location (e.g. Military Base, Airport, etc.)" required>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="weapon-type">Weapon Type (Multiple selection):</label>
+                        <select id="weapon-type" name="weapon-type" multiple required>
+                            <option value="Missile">Missile</option>
+                            <option value="Drone">Drone</option>
+                            <option value="Airstrike">Airstrike</option>
+                            <option value="Artillery">Artillery</option>
+                            <option value="Mossad Targeted Killings">Mossad Targeted Killings</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="detailed-weapon">Detailed Weapon Type:</label>
+                        <input type="text" id="detailed-weapon" name="detailed-weapon" placeholder="Enter detailed weapon information">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="impact-radius">Impact Radius (meters):</label>
+                        <input type="number" id="impact-radius" name="impact-radius" min="50" max="1000" value="500">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group half">
+                        <label for="casualties-dead">Deaths:</label>
+                        <input type="text" id="casualties-dead" name="casualties-dead" placeholder="e.g. 5 or Unknown">
+                    </div>
+                    <div class="form-group half">
+                        <label for="casualties-wounded">Wounded:</label>
+                        <input type="text" id="casualties-wounded" name="casualties-wounded" placeholder="e.g. 10-15 or No Info">
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="submit-button">Add Incident</button>
+                    <button type="button" class="cancel-button">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Replace Leaflet with Mapbox GL JS -->
+    <script src='https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js'></script>
+    <!-- Add Autocomplete JS -->
+    <script src="https://cdn.jsdelivr.net/npm/@tarekraafat/autocomplete.js@10.2.7/dist/autoComplete.min.js"></script>
+    
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-analytics.js";
+        import { getDatabase, ref, set, get, child, remove } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
+
+        async function initializeFirebase() {
+            try {
+                // Determine the API server URL based on the current environment
+                const apiBaseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+                    ? 'http://localhost:8000'
+                    : 'https://iranvsisrael.live';
+
+                // Keep trying to fetch Firebase API key until successful
+                let apiKeyResponse;
+                let retryCount = 0;
+                const maxRetries = 5;
+                const retryDelay = 2000; // 2 seconds
+
+                while (retryCount < maxRetries) {
+                    try {
+                        apiKeyResponse = await fetch(`${apiBaseUrl}/api/keys/firebase`, {
+                            method: 'GET',
+                            mode: 'cors',
+                            credentials: 'include',
+                            headers: {
+                                'Accept': 'application/json',
+                                'Origin': window.location.origin
+                            }
+                        });
+                        
+                        if (apiKeyResponse.ok) {
+                            break;
+                        } else {
+                            throw new Error(`Server responded with status: ${apiKeyResponse.status}`);
+                        }
+                    } catch (error) {
+                        console.log(`Attempt ${retryCount + 1}/${maxRetries} failed:`, error);
+                        retryCount++;
+                        
+                        if (retryCount === maxRetries) {
+                            throw new Error('Failed to initialize after maximum retries');
+                        }
+                        
+                        await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    }
+                }
+
+                const data = await apiKeyResponse.json();
+
+        // Initialize Firebase
+        const firebaseConfig = {
+                    apiKey: data.key,
+            authDomain: "israel-iran.firebaseapp.com",
+            databaseURL: "https://israel-iran-default-rtdb.firebaseio.com",
+            projectId: "israel-iran",
+            storageBucket: "israel-iran.firebasestorage.app",
+            messagingSenderId: "44789488597",
+            appId: "1:44789488597:web:ba39f0f00367ba1d73fb5c",
+            measurementId: "G-3K4FEQN66V"
+        };
+
+            const app = initializeApp(firebaseConfig);
+            const analytics = getAnalytics(app);
+            const database = getDatabase(app);
+            
+            // Create a global Firebase object with all needed functions
+            window.FirebaseService = {
+                database,
+                ref,
+                set,
+                get,
+                child,
+                    remove,
+                    initialized: true
+            };
+
+            console.log('Firebase initialized successfully');
+            
+            // Initialize services and make mapService globally available
+            window.mapService = new MapService();
+            window.newsService = new NewsService(window.mapService);
+
+            // Add click handler for Latest Updates link
+            document.getElementById('latest-updates-link').addEventListener('click', (e) => {
+                e.preventDefault();
+                const newsSection = document.getElementById('news-section');
+                newsSection.classList.toggle('show');
+            });
+
+            // Add click handler for menu toggle
+            document.querySelector('.menu-toggle').addEventListener('click', () => {
+                document.querySelector('.side-navbar').classList.toggle('expanded');
+            });
+
+                // Dispatch event that Firebase is ready
+                window.dispatchEvent(new Event('firebaseReady'));
+
+        } catch (error) {
+            console.error('Error initializing Firebase:', error);
+                // Retry initialization after a delay
+                setTimeout(initializeFirebase, 2000);
+            }
+        }
+
+        // Start Firebase initialization
+        initializeFirebase();
+    </script>
+
+    <!-- Application scripts -->
+    <script src="../js/config.js"></script>
+    <script src="../js/countryBorders.js"></script>
+    <script src="../js/mapService.js"></script>
+    <script src="../js/newsService.js"></script>
+    <script src="../js/dataEntryService.js"></script>
+</body>
+</html> 
