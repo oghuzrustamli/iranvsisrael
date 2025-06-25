@@ -1,0 +1,1621 @@
+class MapService {
+    constructor() {
+        this.map = null;
+        this.markers = new Map();
+        this.markerClusters = new Map(); // Store markers by location
+        this.countryBorders = new Map(); // Store country border layers
+        this.impactCircles = new Map(); // Store impact radius circles
+        this.mapboxToken = null; // Will be fetched from server
+        
+        // Track the newest and oldest dates for color scaling
+        this.newestDate = null;
+        this.oldestDate = null;
+
+        // Loading state tracking
+        this.isMapLoaded = false;
+        this.isDataLoaded = false;
+        this.isInitialized = false;
+        this.loadingOverlay = document.getElementById('loading-overlay');
+        this.initRetryCount = 0;
+        this.maxRetries = 3;
+
+        console.log('MapService initialized');
+        this.initializeMap();
+
+        // Instead of Sets, use Maps to track cities with their attack details
+        this.israelCities = new Map(); // city -> { count: number, dates: Set<string> }
+        this.iranCities = new Map();
+
+        this.markersArray = []; // Array for filter functionality
+        this.activeFilters = new Set(['Missile', 'Drone', 'Airstrike', 'Artillery', 'Bomb', 'Mossad Targeted Killings']);
+        this.initializeFilters();
+
+        this.markersMap = new Map(); // Store all markers with their properties
+    }
+
+    checkLoadingComplete() {
+        console.log('Checking loading state:', {
+            isMapLoaded: this.isMapLoaded,
+            isDataLoaded: this.isDataLoaded,
+            isInitialized: this.isInitialized
+        });
+
+        if (this.isMapLoaded && this.isDataLoaded && this.isInitialized) {
+            console.log('Loading complete, hiding overlay');
+            // Add fade-out class to trigger animation
+            this.loadingOverlay.classList.add('fade-out');
+            // Remove the overlay after animation completes
+            setTimeout(() => {
+                this.loadingOverlay.style.display = 'none';
+            }, 500);
+        }
+    }
+
+    async initializeMap() {
+        try {
+            console.log('Initializing map...');
+            
+            // Fetch Mapbox token from server
+            const response = await fetch('/api/keys/mapbox');
+            const data = await response.json();
+            this.mapboxToken = data.key;
+            
+            mapboxgl.accessToken = this.mapboxToken;
+            
+            this.map = new mapboxgl.Map({
+                container: 'map',
+                style: 'mapbox://styles/mapbox/dark-v10',
+                center: [47.5, 32], // Centered between Iran and Israel
+                zoom: 5, // Zoom level to show both countries
+                attributionControl: true,
+                projection: 'mercator', // Force Mercator projection for stable marker positions
+                pitch: 0, // Start with 0 pitch for 2D view
+                bearing: 0,
+                renderWorldCopies: false // Prevent wrapping around the globe
+            });
+
+            // Disable map rotation to enforce 2D view by default
+            this.map.dragRotate.disable();
+            this.map.touchZoomRotate.disableRotation();
+
+            // Wait for map to load
+            await new Promise((resolve) => {
+                this.map.on('load', () => {
+                    console.log('Map loaded successfully');
+                    this.isMapLoaded = true;
+                    this.checkLoadingComplete();
+                    resolve();
+                });
+            });
+
+            // Add controls after map is loaded
+            this.map.addControl(new mapboxgl.NavigationControl({
+                showCompass: false
+            }), 'top-right');
+            
+            this.map.addControl(new mapboxgl.FullscreenControl(), 'top-right');
+
+            // Initialize other components
+            await this.addCountryBorders();
+            await this.initializeCityStatistics();
+            
+            console.log('Map initialization completed');
+            this.isInitialized = true;
+            this.checkLoadingComplete();
+
+            // Start loading incidents after map is fully initialized
+            await this.loadIncidentsFromFirebase();
+
+        } catch (error) {
+            console.error('Error initializing map:', error);
+            if (this.initRetryCount < this.maxRetries) {
+                this.initRetryCount++;
+                console.log(`Retrying initialization (attempt ${this.initRetryCount})...`);
+                setTimeout(() => this.initializeMap(), 2000);
+            }
+        }
+    }
+
+    async loadIncidentsFromFirebase(retryCount = 0) {
+        if (!this.isMapLoaded) {
+            console.log('Map not initialized yet, waiting...');
+            if (retryCount < this.maxRetries) {
+                setTimeout(() => this.loadIncidentsFromFirebase(retryCount + 1), 1000);
+            }
+            return;
+        }
+
+        try {
+            console.log('Loading incidents from Firebase...');
+            const newsRef = window.FirebaseService.ref(window.FirebaseService.database, 'news');
+            const snapshot = await window.FirebaseService.get(newsRef);
+
+            if (snapshot.exists()) {
+                const newsData = snapshot.val();
+                const incidents = Object.values(newsData);
+
+                // Sort incidents by timestamp
+                incidents.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+                // Clear existing markers
+                this.clearAllIncidents();
+
+                // Mark data as loaded before adding markers
+                this.isDataLoaded = true;
+                this.checkLoadingComplete();
+
+                // Add markers without delay to speed up loading
+                const addMarkersPromises = incidents.map(incident => this.addIncident(incident));
+                await Promise.all(addMarkersPromises);
+
+                // Update city statistics after all incidents are loaded
+                await this.initializeCityStatistics();
+
+                console.log(`Successfully loaded ${incidents.length} incidents`);
+            } else {
+                console.log('No incidents found in Firebase');
+                // Even if no incidents, mark data as loaded
+                this.isDataLoaded = true;
+                this.checkLoadingComplete();
+            }
+
+        } catch (error) {
+            console.error('Error loading incidents:', error);
+            if (retryCount < this.maxRetries) {
+                console.log(`Retrying loading incidents (attempt ${retryCount + 1})...`);
+                setTimeout(() => this.loadIncidentsFromFirebase(retryCount + 1), 2000);
+            } else {
+                // If all retries failed, still mark as loaded to remove loading screen
+                this.isDataLoaded = true;
+                this.checkLoadingComplete();
+            }
+        }
+    }
+
+    async addCountryBorders() {
+        try {
+            return new Promise((resolve) => {
+                if (!this.map) {
+                    console.error('Map not initialized');
+                    resolve();
+                    return;
+                }
+
+                this.map.addSource('country-borders', {
+                    type: 'geojson',
+                    data: COUNTRY_BORDERS
+                });
+
+                this.map.addLayer({
+                    'id': 'country-borders',
+                    'type': 'line',
+                    'source': 'country-borders',
+                    'layout': {
+                        'line-join': 'round',
+                        'line-cap': 'round'
+                    },
+                    'paint': {
+                        'line-color': '#ff3b30',
+                        'line-width': 3,
+                        'line-opacity': 0.8,
+                        'line-dasharray': [5, 10]
+                    }
+                });
+
+                this.map.addLayer({
+                    'id': 'country-fills',
+                    'type': 'fill',
+                    'source': 'country-borders',
+                    'paint': {
+                        'fill-color': '#ff3b30',
+                        'fill-opacity': 0.1
+                    }
+                });
+
+                console.log('Country borders added successfully');
+                resolve();
+            });
+        } catch (error) {
+            console.error('Error adding country borders:', error);
+        }
+    }
+
+    findLocation(locationName) {
+        console.log('Looking up location:', locationName);
+        
+        // Clean up the location name
+        const cleanName = locationName.trim()
+            .replace(/^(in|at|near|from|to)\s+/i, '') // Remove location prefixes
+            .replace(/[,.;].*$/, ''); // Remove everything after comma, period, or semicolon
+        
+        // Check direct match
+        if (CONFIG.knownLocations[cleanName]) {
+            console.log('Found exact location match:', cleanName);
+            return {
+                name: cleanName,
+                ...CONFIG.knownLocations[cleanName]
+            };
+        }
+        
+        // Check case-insensitive match
+        const lowerName = cleanName.toLowerCase();
+        for (const [key, coords] of Object.entries(CONFIG.knownLocations)) {
+            if (key.toLowerCase() === lowerName) {
+                console.log('Found case-insensitive location match:', key);
+                return {
+                    name: key,
+                    ...coords
+                };
+            }
+        }
+        
+        // Check if the location contains any known location names
+        for (const [key, coords] of Object.entries(CONFIG.knownLocations)) {
+            if (cleanName.toLowerCase().includes(key.toLowerCase())) {
+                console.log('Found partial location match:', key, 'in', cleanName);
+                return {
+                    name: key,
+                    ...coords
+                };
+            }
+        }
+        
+        console.log('No location match found for:', locationName);
+        return null;
+    }
+
+    // Calculate offset for overlapping markers
+    calculateMarkerOffset(location) {
+        const lat = location.lat || (location.position && location.position.lat);
+        const lon = location.lon || location.lon || (location.position && location.position.lng);
+        
+        if (typeof lat === 'undefined' || typeof lon === 'undefined') {
+            console.error('Invalid location format:', location);
+            return { lat: 0, lon: 0 };
+        }
+
+        const key = `${lat},${lon}`;
+        const existingMarkers = this.markerClusters.get(key) || [];
+        const index = existingMarkers.length;
+
+        // Base offset in degrees (approximately 1.5km)
+        const baseOffset = 0.015;
+
+        // Simple circular distribution
+        switch (index) {
+            case 0: // First marker - center
+                return { lat: 0, lon: 0 };
+            case 1: // Second marker - North
+                return { lat: baseOffset, lon: 0 };
+            case 2: // Third marker - Southeast
+                return { lat: -baseOffset * 0.866, lon: baseOffset * 0.5 };
+            case 3: // Fourth marker - Southwest
+                return { lat: -baseOffset * 0.866, lon: -baseOffset * 0.5 };
+            case 4: // Fifth marker - East
+                return { lat: 0, lon: baseOffset };
+            case 5: // Sixth marker - West
+                return { lat: 0, lon: -baseOffset };
+            default: // More than 6 markers
+                const angle = (index * Math.PI * 2) / 6;
+                const ringIndex = Math.floor((index - 6) / 6) + 2;
+                return {
+                    lat: baseOffset * ringIndex * Math.cos(angle),
+                    lon: baseOffset * ringIndex * Math.sin(angle)
+                };
+        }
+    }
+
+    // Helper method to update date range when adding new markers
+    updateDateRange(timestamp) {
+        const date = new Date(timestamp);
+        if (!this.newestDate || date > this.newestDate) {
+            this.newestDate = date;
+        }
+        if (!this.oldestDate || date < this.oldestDate) {
+            this.oldestDate = date;
+        }
+    }
+
+    // Calculate color based on date
+    getColorForDate(timestamp) {
+        const date = new Date(timestamp);
+        
+        // If this is the only marker, use the darkest red
+        if (!this.newestDate || !this.oldestDate || this.newestDate.getTime() === this.oldestDate.getTime()) {
+            return {
+                main: '#ff0000',
+                fill: '#ff000033',
+                ripple: '#ff0000'
+            };
+        }
+
+        // Calculate how old this marker is relative to the newest one
+        const totalRange = this.newestDate.getTime() - this.oldestDate.getTime();
+        const ageFromNewest = this.newestDate.getTime() - date.getTime();
+        const relativeAge = ageFromNewest / totalRange; // 0 = newest, 1 = oldest
+
+        // Use HSL interpolation from red (0 degrees) to yellow (60 degrees)
+        const hue = Math.min(60, Math.round(relativeAge * 60)); // Interpolate hue from 0 to 60
+        const saturation = 100; // Keep full saturation
+        const lightness = Math.min(50 + (relativeAge * 20), 70); // Gradually increase lightness with age
+
+        const mainColor = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+        const fillColor = `hsla(${hue}, ${saturation}%, ${lightness}%, 0.2)`;
+        const rippleColor = mainColor;
+
+        return {
+            main: mainColor,
+            fill: fillColor,
+            ripple: rippleColor
+        };
+    }
+
+    // Update all marker colors based on current date range
+    updateAllMarkerColors() {
+        this.markers.forEach((markerData, id) => {
+            const { marker, timestamp, impactCircle } = markerData;
+            const colorScheme = this.getColorForDate(timestamp);
+            
+            // Update marker color
+            const markerElement = marker.getElement();
+            const customMarker = markerElement.querySelector('.custom-marker');
+            if (customMarker) {
+                customMarker.style.backgroundColor = colorScheme.main;
+        }
+
+            // Update ripple color
+            const ripples = markerElement.querySelectorAll('.ripple');
+            ripples.forEach(ripple => {
+                ripple.style.setProperty('--ripple-color', colorScheme.ripple);
+            });
+
+            // Update impact circle colors if they exist
+            if (impactCircle) {
+                ['gradientLayerId', 'outlineLayerId', 'rippleLayerId'].forEach(layerId => {
+                    if (this.map.getLayer(impactCircle[layerId])) {
+                        if (layerId === 'gradientLayerId') {
+                            this.map.setPaintProperty(impactCircle[layerId], 'fill-color', colorScheme.main);
+                        } else {
+                            this.map.setPaintProperty(impactCircle[layerId], 'line-color', colorScheme.ripple);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    createImpactRadiusLayer(id, location, radius) {
+        if (!radius || radius <= 0) return null;
+
+        const colorScheme = this.getColorForDate(location.timestamp);
+        
+        // Create a point feature for the center
+        const center = [location.lon, location.lat];
+        
+        // Create a circle with the specified radius
+        const radiusInKm = radius / 1000;
+        const options = {
+            steps: 64,
+            units: 'kilometers'
+        };
+        
+        // Generate circle polygon coordinates
+        const coordinates = [];
+        const angleStep = 360 / options.steps;
+        
+        for (let i = 0; i < options.steps; i++) {
+            const angle = i * angleStep;
+            const lat = location.lat + (radiusInKm / 111.32) * Math.cos(angle * Math.PI / 180);
+            const lon = location.lon + (radiusInKm / (111.32 * Math.cos(location.lat * Math.PI / 180))) * Math.sin(angle * Math.PI / 180);
+            coordinates.push([lon, lat]);
+        }
+        coordinates.push(coordinates[0]);
+
+        const circleFeature = {
+            'type': 'Feature',
+            'geometry': {
+                'type': 'Polygon',
+                'coordinates': [coordinates]
+            },
+            'properties': {
+                'radius': radius,
+                'center': center
+            }
+        };
+
+        const sourceId = `impact-source-${id}`;
+        const layerId = `impact-layer-${id}`;
+
+        if (!this.map.getSource(sourceId)) {
+            this.map.addSource(sourceId, {
+                'type': 'geojson',
+                'data': circleFeature
+            });
+        }
+
+        if (!this.map.getLayer(layerId)) {
+            // Add fill layer for the impact radius with gradient
+            this.map.addLayer({
+                'id': `${layerId}-gradient`,
+                'type': 'fill',
+                'source': sourceId,
+                'paint': {
+                    'fill-color': colorScheme.main,
+                    'fill-opacity': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0, 0.5,
+                        22, 0.2
+                    ]
+                }
+            });
+
+            // Add outline layer
+            this.map.addLayer({
+                'id': `${layerId}-outline`,
+                'type': 'line',
+                'source': sourceId,
+                'paint': {
+                    'line-color': colorScheme.main,
+                    'line-width': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0, 1,
+                        22, 3
+                    ],
+                    'line-opacity': 0.8
+                }
+            });
+
+            // Add ripple effect layer
+            this.map.addLayer({
+                'id': `${layerId}-ripple`,
+                'type': 'line',
+                'source': sourceId,
+                'paint': {
+                    'line-color': colorScheme.ripple,
+                    'line-width': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0, 1,
+                        22, 4
+                    ],
+                    'line-opacity': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0, 0.6,
+                        22, 0.3
+                    ]
+                }
+            });
+
+            // Start the ripple animation
+            let progress = 0;
+            const animate = () => {
+                if (!this.map.getLayer(`${layerId}-ripple`)) return;
+
+                progress = (progress + 0.01) % 1;
+                this.map.setPaintProperty(
+                    `${layerId}-ripple`,
+                    'line-width',
+                    [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0, 1 + progress * 2,
+                        22, 2 + progress * 4
+                    ]
+                );
+
+                this.map.setPaintProperty(
+                    `${layerId}-ripple`,
+                    'line-opacity',
+                    [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0, 0.6 * (1 - progress),
+                        22, 0.3 * (1 - progress)
+                    ]
+                );
+
+                requestAnimationFrame(animate);
+            };
+
+            animate();
+        }
+
+        return { 
+            sourceId, 
+            layerId,
+            gradientLayerId: `${layerId}-gradient`,
+            outlineLayerId: `${layerId}-outline`,
+            rippleLayerId: `${layerId}-ripple`,
+            colorScheme
+        };
+    }
+
+    createPopupContent(location) {
+        const getCountryName = (type) => {
+            switch (type) {
+                case '1': return 'Iran';
+                case '2': return 'Israel';
+                case '3': return 'USA';
+                default: return 'Unknown';
+            }
+        };
+
+        const formatDate = (timestamp) => {
+            return new Date(timestamp).toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+        };
+
+        // Handle weapon types
+        const weaponTypesHtml = location.weaponType ? 
+            (Array.isArray(location.weaponType) ? location.weaponType : location.weaponType.split(','))
+                .map(weapon => weapon.trim())
+                .filter(weapon => weapon && weapon !== 'No Info' && weapon !== 'Məlumat yoxdur')
+                .map(weapon => `<span class="weapon-tag">${weapon}</span>`)
+                .join('') : '';
+
+        // Handle casualties data
+        const casualties = location.casualties || {};
+        const deadCount = casualties.dead || 'Məlumat yoxdur';
+        const woundedCount = casualties.wounded || 'Məlumat yoxdur';
+
+        return `
+            <div class="incident-popup dark-mode">
+                <div class="incident-header">
+                    <h3>${location.name}</h3>
+                    <div class="date">${formatDate(location.timestamp)}</div>
+                </div>
+                
+                <div class="incident-body">
+                    <div class="target-info">
+                        <div class="label">Attacker</div>
+                        <div class="value">${getCountryName(location.type)}</div>
+                    </div>
+
+                    <div class="target-info">
+                        <div class="label">Target Location</div>
+                        <div class="value">${location.targetType || 'Məlumat yoxdur'}</div>
+                    </div>
+
+                    ${weaponTypesHtml ? `
+                    <div class="weapon-info">
+                        <div class="label">Weapon Types</div>
+                        <div class="weapon-tags">
+                            ${weaponTypesHtml}
+                        </div>
+                        ${location.detailedWeapon ? `
+                        <div class="detailed-weapon">
+                            <div class="label">Detailed Weapon Info</div>
+                            <div class="value">${location.detailedWeapon}</div>
+                        </div>
+                        ` : ''}
+                    </div>
+                    ` : ''}
+
+                    <div class="casualties-info">
+                        <div class="label">Casualties</div>
+                        <div class="casualties-grid">
+                            <div class="stat-box">
+                                <div class="label">Deaths</div>
+                                <div class="value">${deadCount}</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="label">Wounded</div>
+                                <div class="value">${woundedCount}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    ${location.impactRadius ? `
+                    <div class="impact-info">
+                        <div class="label">Impact Radius</div>
+                        <div class="value">${location.impactRadius} meters</div>
+                    </div>
+                    ` : ''}
+
+                    <div class="coordinates-info">
+                        <div class="label">Coordinates</div>
+                        <div class="value">${location.lat.toFixed(4)}, ${location.lon.toFixed(4)}</div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    async addIncident(incident) {
+        try {
+            if (this.markers.has(incident.id)) {
+                console.log('Incident already exists:', incident.id);
+                return;
+            }
+
+            // Get incident data from Firebase
+            const incidentData = await this.getIncidentFromFirebase(incident.id);
+            const finalData = incidentData || incident;
+
+            // Create base location object
+            const location = {
+                id: finalData.id,
+                lat: finalData.position?.lat || finalData.location?.lat,
+                lon: finalData.position?.lon || finalData.location?.lon || finalData.position?.lng,
+                name: finalData.targetCity || finalData.location?.name || finalData.name,
+                type: finalData.type || finalData.country,
+                timestamp: new Date(finalData.timestamp),
+                targetType: finalData.targetType || finalData.specificTarget,
+                weaponType: finalData.weaponType,
+                detailedWeapon: finalData.detailedWeapon,
+                impactRadius: finalData.impactRadius,
+                casualties: {
+                    dead: finalData.casualties?.dead,
+                    wounded: finalData.casualties?.wounded
+                }
+            };
+
+            // Update date range for color calculation
+            this.updateDateRange(location.timestamp);
+
+            // Calculate marker position with offset
+            const key = `${location.lat},${location.lon}`;
+            if (!this.markerClusters.has(key)) {
+                this.markerClusters.set(key, []);
+            }
+            
+            const offset = this.calculateMarkerOffset(location);
+            const adjustedLocation = {
+                ...location,
+                lat: location.lat + offset.lat,
+                lon: location.lon + offset.lon
+            };
+
+            // Create marker elements with date-based color
+            const { container, el, hoverPopup } = this.createMarkerElements(location);
+
+            // Create popup
+            const popup = new mapboxgl.Popup({
+                offset: 25,
+                closeButton: true,
+                closeOnClick: false,
+                className: 'custom-popup dark-mode',
+                maxWidth: '250px'
+            });
+
+            // Create the marker
+            const marker = new mapboxgl.Marker({
+                element: container,
+                anchor: 'center'
+            })
+                .setLngLat([adjustedLocation.lon, adjustedLocation.lat])
+                .setPopup(popup)
+                .addTo(this.map);
+
+            // Add to clusters array
+            this.markerClusters.get(key).push({
+                marker,
+                location: adjustedLocation,
+                offset
+            });
+
+            // Update popup content
+            this.updatePopupContent(popup, location);
+
+            // Add hover effects
+            this.addMarkerHoverEffects(container, el, popup, location);
+
+            // Store marker data
+            const markerData = {
+                marker,
+                timestamp: location.timestamp,
+                originalLocation: location,
+                impactCircle: null,
+                weaponTypes: Array.isArray(location.weaponType) 
+                    ? location.weaponType 
+                    : location.weaponType?.split(',').map(w => w.trim()) || []
+            };
+
+            // Store in markers Map
+            this.markers.set(location.id, markerData);
+
+            // Add impact radius if specified
+            if (location.impactRadius) {
+                const impactCircle = this.createImpactRadiusLayer(location.id, adjustedLocation, location.impactRadius);
+                markerData.impactCircle = impactCircle;
+            }
+
+            // Update colors of all markers since the date range might have changed
+            this.updateAllMarkerColors();
+
+            // Apply current filters
+            this.applyFilters();
+
+            console.log('Incident added successfully:', location.id);
+        } catch (error) {
+            console.error('Error adding incident:', error);
+        }
+    }
+
+    async getIncidentFromFirebase(id) {
+        try {
+            const newsRef = window.FirebaseService.ref(window.FirebaseService.database, `news/${id}`);
+            const snapshot = await window.FirebaseService.get(newsRef);
+            return snapshot.exists() ? snapshot.val() : null;
+        } catch (error) {
+            console.error('Error fetching incident from Firebase:', error);
+            return null;
+        }
+    }
+
+    createMarkerElements(location) {
+        const colorScheme = this.getColorForDate(location.timestamp);
+
+        const container = document.createElement('div');
+        container.className = 'marker-container';
+        container.style.setProperty('--marker-color', colorScheme.main);
+        container.style.width = '32px';
+        container.style.height = '32px';
+
+        const el = document.createElement('div');
+        el.className = 'custom-marker';
+        el.style.backgroundColor = colorScheme.main;
+
+        // Add rocket icon
+        const rocketIcon = document.createElement('img');
+        rocketIcon.src = 'img/rocket.png';
+        rocketIcon.className = 'marker-icon';
+        el.appendChild(rocketIcon);
+
+        const rippleContainer = document.createElement('div');
+        rippleContainer.className = 'ripple-container';
+
+        const ripple1 = document.createElement('div');
+        ripple1.className = 'ripple ripple-1';
+        ripple1.style.setProperty('--ripple-color', colorScheme.main);
+
+        const ripple2 = document.createElement('div');
+        ripple2.className = 'ripple ripple-2';
+        ripple2.style.setProperty('--ripple-color', colorScheme.main);
+
+        // Create hover popup
+        const hoverPopup = document.createElement('div');
+        hoverPopup.className = 'marker-hover-popup';
+        hoverPopup.style.display = 'none';
+        hoverPopup.innerHTML = `
+            <div class="hover-popup-content">
+                <div class="hover-city">${location.name}</div>
+                <div class="hover-date">${new Date(location.timestamp).toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric'
+                })}</div>
+            </div>
+        `;
+
+        rippleContainer.appendChild(ripple1);
+        rippleContainer.appendChild(ripple2);
+        container.appendChild(rippleContainer);
+        container.appendChild(el);
+        container.appendChild(hoverPopup);
+
+        return { container, el, hoverPopup };
+    }
+
+    updatePopupContent(popup, location) {
+        const content = document.createElement('div');
+        content.className = 'incident-popup dark-mode';
+
+        // Header section
+        const header = document.createElement('div');
+        header.className = 'incident-header';
+        header.innerHTML = `
+            <h3>${location.name || 'Unknown Location'}</h3>
+            <div class="date">${location.timestamp.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            })}</div>
+        `;
+        content.appendChild(header);
+
+        // Body section
+        const body = document.createElement('div');
+        body.className = 'incident-body';
+
+        // Attacker info
+        const attackerInfo = document.createElement('div');
+        attackerInfo.className = 'target-info';
+        attackerInfo.innerHTML = `
+            <div class="label">Attacker</div>
+            <div class="value">${location.type === '1' ? 'Iran' : location.type === '2' ? 'Israel' : 'USA'}</div>
+        `;
+        body.appendChild(attackerInfo);
+
+        // Target location
+        const targetInfo = document.createElement('div');
+        targetInfo.className = 'target-info';
+        targetInfo.innerHTML = `
+            <div class="label">Target Location</div>
+            <div class="value">${location.targetType || 'Məlumat yoxdur'}</div>
+        `;
+        body.appendChild(targetInfo);
+
+        // Weapon types
+        if (location.weaponType) {
+            const weaponTypes = Array.isArray(location.weaponType) 
+                ? location.weaponType 
+                : location.weaponType.split(',');
+
+            if (weaponTypes.length > 0) {
+                const weaponInfo = document.createElement('div');
+                weaponInfo.className = 'weapon-info';
+                weaponInfo.innerHTML = `
+                    <div class="label">Weapon Types</div>
+                    <div class="weapon-tags">
+                        ${weaponTypes
+                            .map(weapon => weapon.trim())
+                            .filter(weapon => weapon && weapon !== 'No Info' && weapon !== 'Məlumat yoxdur')
+                            .map(weapon => `<span class="weapon-tag">${weapon}</span>`)
+                            .join('')}
+                    </div>
+                    ${location.detailedWeapon ? `
+                        <div class="detailed-weapon">
+                            <div class="label">Detailed Weapon Info</div>
+                            <div class="value">${location.detailedWeapon}</div>
+                        </div>
+                    ` : ''}
+                `;
+                body.appendChild(weaponInfo);
+            }
+        }
+
+        // Casualties
+        const casualtiesInfo = document.createElement('div');
+        casualtiesInfo.className = 'casualties-info';
+        casualtiesInfo.innerHTML = `
+            <div class="label">Casualties</div>
+                    <div class="casualties-grid">
+                        <div class="stat-box">
+                    <div class="label">Deaths</div>
+                    <div class="value">${location.casualties?.dead || 'Məlumat yoxdur'}</div>
+                        </div>
+                <div class="stat-box">
+                    <div class="label">Wounded</div>
+                    <div class="value">${location.casualties?.wounded || 'Məlumat yoxdur'}</div>
+                    </div>
+            </div>
+        `;
+        body.appendChild(casualtiesInfo);
+
+        // Impact radius
+        if (location.impactRadius) {
+            const impactInfo = document.createElement('div');
+            impactInfo.className = 'impact-info';
+            impactInfo.innerHTML = `
+                <div class="label">Impact Radius</div>
+                <div class="value">${location.impactRadius} meters</div>
+            `;
+            body.appendChild(impactInfo);
+        }
+
+        // Coordinates
+        const coordsInfo = document.createElement('div');
+        coordsInfo.className = 'coordinates-info';
+        coordsInfo.innerHTML = `
+            <div class="label">Coordinates</div>
+            <div class="value">${location.lat.toFixed(4)}, ${location.lon.toFixed(4)}</div>
+        `;
+        body.appendChild(coordsInfo);
+
+        content.appendChild(body);
+        popup.setDOMContent(content);
+    }
+
+    addMarkerHoverEffects(container, el, popup, location) {
+        let isExpanded = false;
+        let hoverTimeout = null;
+        const hoverPopup = container.querySelector('.marker-hover-popup');
+
+        // Add hover effects
+        container.addEventListener('mouseenter', () => {
+            if (!isExpanded) {
+                hoverTimeout = setTimeout(() => {
+                    if (hoverPopup) {
+                        hoverPopup.style.display = 'block';
+                        container.style.zIndex = '1000';
+                    }
+                }, 0);
+            }
+        });
+
+        container.addEventListener('mouseleave', () => {
+            if (hoverTimeout) {
+                clearTimeout(hoverTimeout);
+                hoverTimeout = null;
+            }
+            if (hoverPopup) {
+                hoverPopup.style.display = 'none';
+                if (!isExpanded) {
+                    container.style.zIndex = '';
+                }
+            }
+        });
+
+        container.addEventListener('click', (e) => {
+            e.stopPropagation();
+            
+            if (hoverTimeout) {
+                clearTimeout(hoverTimeout);
+                hoverTimeout = null;
+            }
+            if (hoverPopup) {
+                hoverPopup.style.display = 'none';
+            }
+            
+            const colorScheme = this.getColorForDate(location.timestamp);
+            
+            this.markers.forEach((markerData) => {
+                if (markerData.marker.getPopup().isOpen()) {
+                    markerData.marker.getPopup().remove();
+                    const markerEl = markerData.marker.getElement();
+                    markerEl.style.width = '32px';
+                    markerEl.style.height = '32px';
+                    markerEl.style.zIndex = '';
+                    markerEl.querySelector('.custom-marker').style.backgroundColor = this.getColorForDate(markerData.timestamp).main;
+                    
+                    if (markerData.impactCircle) {
+                        this.highlightImpactRadius(markerData.impactCircle, false);
+                    }
+                }
+            });
+            
+            if (isExpanded) {
+                popup.remove();
+                container.style.width = '32px';
+                container.style.height = '32px';
+                container.style.zIndex = '';
+                el.style.backgroundColor = colorScheme.main;
+                
+                const impactCircle = this.markers.get(location.id)?.impactCircle;
+                if (impactCircle) {
+                    this.highlightImpactRadius(impactCircle, false);
+                }
+            } else {
+                popup.addTo(this.map);
+                container.style.width = '40px';
+                container.style.height = '40px';
+                container.style.zIndex = '1000';
+                
+                const date = new Date(location.timestamp);
+                const totalRange = this.newestDate.getTime() - this.oldestDate.getTime();
+                const ageFromNewest = this.newestDate.getTime() - date.getTime();
+                const relativeAge = ageFromNewest / totalRange;
+                const hue = Math.min(60, Math.round(relativeAge * 60));
+                const saturation = 100;
+                const lightness = Math.min(60 + (relativeAge * 20), 80);
+                
+                el.style.backgroundColor = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+                
+                const impactCircle = this.markers.get(location.id)?.impactCircle;
+                if (impactCircle) {
+                    this.highlightImpactRadius(impactCircle, true);
+                }
+            }
+
+            isExpanded = !isExpanded;
+        });
+
+        popup.on('close', () => {
+            if (isExpanded) {
+                container.style.width = '32px';
+                container.style.height = '32px';
+                container.style.zIndex = '';
+                el.style.backgroundColor = this.getColorForDate(location.timestamp).main;
+                
+                const impactCircle = this.markers.get(location.id)?.impactCircle;
+                if (impactCircle) {
+                    this.highlightImpactRadius(impactCircle, false);
+                }
+                isExpanded = false;
+            }
+        });
+    }
+
+    highlightImpactRadius(impactCircle, highlight) {
+        const opacity = highlight ? 
+            [['interpolate', ['linear'], ['zoom'], 0, 0.7, 22, 0.4]] :
+            [['interpolate', ['linear'], ['zoom'], 0, 0.5, 22, 0.2]];
+        
+        const lineWidth = highlight ?
+            [['interpolate', ['linear'], ['zoom'], 0, 2, 22, 4]] :
+            [['interpolate', ['linear'], ['zoom'], 0, 1, 22, 3]];
+        
+        const lineOpacity = highlight ?
+            [['interpolate', ['linear'], ['zoom'], 0, 0.8, 22, 0.5]] :
+            [['interpolate', ['linear'], ['zoom'], 0, 0.6, 22, 0.3]];
+
+        this.map.setPaintProperty(impactCircle.gradientLayerId, 'fill-opacity', opacity);
+        this.map.setPaintProperty(impactCircle.outlineLayerId, 'line-width', lineWidth);
+        this.map.setPaintProperty(impactCircle.rippleLayerId, 'line-opacity', lineOpacity);
+    }
+
+    removeIncident(id) {
+        console.log('Removing incident:', id);
+        if (this.markers.has(id)) {
+            const { marker, originalLocation, impactCircle } = this.markers.get(id);
+            
+            // Remove impact radius layers if they exist
+            if (impactCircle) {
+                // Remove ripple layer
+                if (this.map.getLayer(impactCircle.rippleLayerId)) {
+                    this.map.removeLayer(impactCircle.rippleLayerId);
+                }
+                
+                if (this.map.getLayer(impactCircle.outlineLayerId)) {
+                    this.map.removeLayer(impactCircle.outlineLayerId);
+                }
+                if (this.map.getLayer(impactCircle.layerId)) {
+                    this.map.removeLayer(impactCircle.layerId);
+                }
+                if (this.map.getSource(impactCircle.sourceId)) {
+                    this.map.removeSource(impactCircle.sourceId);
+                }
+            }
+            
+            // Remove from cluster
+            const key = `${originalLocation.lat},${originalLocation.lon}`;
+            if (this.markerClusters.has(key)) {
+                const cluster = this.markerClusters.get(key);
+                const index = cluster.indexOf(marker);
+                if (index > -1) {
+                    cluster.splice(index, 1);
+                }
+                if (cluster.length === 0) {
+                    this.markerClusters.delete(key);
+                }
+            }
+
+            marker.remove();
+            this.markers.delete(id);
+            console.log('Incident removed:', id);
+        }
+    }
+
+    clearOldIncidents(maxAge) {
+        console.log('Clearing old incidents...');
+        const now = Date.now();
+        this.markers.forEach(({ marker, timestamp }, id) => {
+            if (now - timestamp.getTime() > maxAge) {
+                this.removeIncident(id);
+            }
+        });
+    }
+
+    clearAllIncidents(preserveManual = true) {
+        console.log('Clearing incidents from map', preserveManual ? '(preserving manual markers)' : '(clearing all)');
+        
+        // Store manual markers if we need to preserve them
+        const manualMarkers = new Map();
+        if (preserveManual) {
+            this.markers.forEach((markerData, id) => {
+                if (id.startsWith('manual-')) {
+                    manualMarkers.set(id, markerData);
+                }
+            });
+        }
+
+        this.markers.forEach(({ marker, impactCircle }, id) => {
+            // Skip manual markers if preserving
+            if (preserveManual && id.startsWith('manual-')) {
+                return;
+            }
+
+            // Remove marker
+            if (marker) {
+            marker.remove();
+            }
+
+            // Remove impact circle layers
+            if (impactCircle) {
+                ['rippleLayerId', 'outlineLayerId', 'gradientLayerId'].forEach(layerId => {
+                    if (this.map.getLayer(impactCircle[layerId])) {
+                        this.map.removeLayer(impactCircle[layerId]);
+                    }
+                });
+                if (this.map.getSource(impactCircle.sourceId)) {
+                    this.map.removeSource(impactCircle.sourceId);
+                }
+            }
+        });
+
+        // Clear all markers except manual ones if preserving
+        if (preserveManual) {
+        this.markers.clear();
+            // Restore manual markers
+            manualMarkers.forEach((markerData, id) => {
+                this.markers.set(id, markerData);
+            });
+        } else {
+            this.markers.clear();
+        }
+
+        this.markerClusters.clear();
+        this.impactCircles.clear();
+
+        // Clear markersMap as well
+        this.markersMap.clear();
+
+        console.log('Incidents cleared', preserveManual ? '(manual markers preserved)' : '(all cleared)');
+    }
+
+    initializeInfoSection() {
+        // Add click handler for info link
+        const infoLink = document.getElementById('info-link');
+        const infoSection = document.getElementById('info-section');
+        
+        if (infoLink && infoSection) {
+            infoLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                
+                // Close news section if it's open
+                const newsSection = document.getElementById('news-section');
+                if (newsSection) {
+                    newsSection.classList.remove('show');
+                }
+                
+                // Toggle info section
+                infoSection.classList.toggle('show');
+                
+                console.log('Info section toggled');
+            });
+            
+            console.log('Info section initialized');
+        } else {
+            console.error('Info link or section not found');
+        }
+    }
+
+    async initializeCityStatistics() {
+        try {
+            const newsRef = window.FirebaseService.ref(window.FirebaseService.database, 'news');
+            const snapshot = await window.FirebaseService.get(newsRef);
+
+            if (snapshot.exists()) {
+                const newsData = snapshot.val();
+                
+                // Clear existing maps
+                this.israelCities.clear();
+                this.iranCities.clear();
+
+                // Process each news item
+                Object.entries(newsData).forEach(([id, newsItem]) => {
+                    let cityName;
+                    let timestamp;
+
+                    if (id.startsWith('manual-')) {
+                        // For manual entries
+                        if (newsItem.location && newsItem.location.name) {
+                            cityName = newsItem.location.name;
+                            timestamp = new Date(newsItem.timestamp);
+                        }
+                    } else if (newsItem.locations && newsItem.locations.length > 0) {
+                        // For automatic news entries
+                        const location = newsItem.locations[0];
+                        cityName = location.name;
+                        timestamp = new Date(newsItem.timestamp);
+                    }
+
+                    if (cityName && timestamp) {
+                        const dateStr = timestamp.toLocaleDateString('az-AZ', {
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit'
+                        });
+
+                        // Function to update city data
+                        const updateCityData = (cityMap, city, date) => {
+                            if (!cityMap.has(city)) {
+                                cityMap.set(city, {
+                                    count: 0,
+                                    dates: new Set()
+                                });
+                            }
+                            const cityData = cityMap.get(city);
+                            if (!cityData.dates.has(date)) {
+                                cityData.count++;
+                                cityData.dates.add(date);
+                            }
+                        };
+
+                        // Check if the city is in Israel or Iran
+                        if (this.isIsraeliCity(cityName)) {
+                            updateCityData(this.israelCities, cityName, dateStr);
+                        } else if (this.isIranianCity(cityName)) {
+                            updateCityData(this.iranCities, cityName, dateStr);
+                        }
+                    }
+                });
+
+                // Update the UI
+                this.updateCityStatistics();
+                console.log('City statistics initialized:', {
+                    israelCities: Array.from(this.israelCities.entries()),
+                    iranCities: Array.from(this.iranCities.entries())
+                });
+            }
+        } catch (error) {
+            console.error('Error initializing city statistics:', error);
+        }
+    }
+
+    // Helper method to check if a city is in Israel
+    isIsraeliCity(city) {
+        const israeliCities = [
+            'Tel Aviv', 'Jerusalem', 'Haifa', 'Beer Sheva', 'Dimona',
+            'Ashkelon', 'Ashdod', 'Netanya', 'Herzliya', 'Ramat Gan',
+            'Rehovot', 'Rishon LeZion', 'Eilat', 'Holon', 'Petah Tikva',
+            'Bat Yam', 'Nahariya', 'Kiryat Gat', 'Kiryat Shmona', 'Acre',
+            'Safed', 'Kiryat Ekron', 'Bnei Brak', 'Caesarea', 'Azor',
+            'Karmiel', 'Gush Dan', 'West Jerusalem', 'Tamra', 'Beit Shean'
+        ];
+        return israeliCities.includes(city);
+    }
+
+    // Helper method to check if a city is in Iran
+    isIranianCity(city) {
+        const iranianCities = [
+            'Tehran', 'Isfahan', 'Natanz', 'Bushehr', 'Tabriz',
+            'Shiraz', 'Kerman', 'Yazd', 'Arak', 'Qom',
+            'Karaj', 'Mashhad', 'Bandar Abbas', 'Kermanshah', 'Hamadan',
+            'Urmia', 'Khorramabad', 'Ahvaz', 'Chabahar', 'Zanjan',
+            'Qazvin', 'Khorramshahr', 'Dezful', 'Birjand', 'Semnan',
+            'Bandar-e Mahshahr', 'Fordow', 'Khondab', 'Parchin',
+            'Piranshahr', 'Kashan', 'Khojir', 'Javadabad',
+            'Najafabad', 'Malard', 'Ijrud', 'Baherestan', 'Robat Karim',
+            'Shahr-e Ray', 'Western Iran'
+        ];
+        return iranianCities.includes(city);
+    }
+
+    updateCityStatistics() {
+        // Update counts in the UI
+        document.getElementById('israel-cities-count').textContent = this.israelCities.size;
+        document.getElementById('iran-cities-count').textContent = this.iranCities.size;
+
+        // Update city lists
+        this.updateCityList('israel-cities-list', this.israelCities);
+        this.updateCityList('iran-cities-list', this.iranCities);
+
+        console.log('City statistics updated - Israel:', this.israelCities.size, 'Iran:', this.iranCities.size);
+        console.log('Israeli cities:', Array.from(this.israelCities.keys()));
+        console.log('Iranian cities:', Array.from(this.iranCities.keys()));
+    }
+
+    updateCityList(elementId, cityMap) {
+        const ul = document.getElementById(elementId);
+        ul.innerHTML = '';
+        
+        [...cityMap.entries()]
+            .sort(([cityA], [cityB]) => cityA.localeCompare(cityB))
+            .forEach(([city, data]) => {
+                const li = document.createElement('li');
+                
+                const cityName = document.createElement('div');
+                cityName.className = 'city-name';
+                cityName.textContent = `${city} (${data.dates.size} times)`;
+                
+                const datesContainer = document.createElement('div');
+                datesContainer.className = 'attack-dates';
+                
+                const sortedDates = [...data.dates]
+                    .sort((a, b) => new Date(b) - new Date(a));
+                
+                sortedDates.forEach(date => {
+                    const dateSpan = document.createElement('span');
+                    dateSpan.className = 'attack-date';
+                    dateSpan.textContent = date;
+
+                    const handleDateFocus = () => {
+                        const dateMarkers = [];
+                        this.markers.forEach((markerData, id) => {
+                            const markerDate = new Date(markerData.timestamp);
+                            const markerDateStr = markerDate.toLocaleDateString('az-AZ', {
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit'
+                            });
+                            
+                            if (markerData.originalLocation.name === city && markerDateStr === date) {
+                                dateMarkers.push({
+                                    id,
+                                    marker: markerData.marker,
+                                    location: markerData.originalLocation,
+                                    impactCircle: markerData.impactCircle
+                                });
+                            }
+                        });
+
+                        if (dateMarkers.length > 0) {
+                            // Fly to the marker location
+                            const marker = dateMarkers[0];
+                            this.map.flyTo({
+                                center: [marker.location.lon, marker.location.lat],
+                                zoom: 13,
+                                duration: 800
+                            });
+
+                            // Highlight the markers for this date
+                            dateMarkers.forEach(marker => {
+                                const markerElement = marker.marker.getElement();
+                                markerElement.style.transform = `${markerElement.style.transform} scale(1.5)`;
+                                markerElement.style.zIndex = '1000';
+
+                                if (marker.impactCircle) {
+                                    // Highlight impact radius
+                                    this.map.setPaintProperty(
+                                        marker.impactCircle.gradientLayerId,
+                                        'fill-opacity',
+                                        [
+                                            'interpolate',
+                                            ['linear'],
+                                            ['zoom'],
+                                            0, 0.7,
+                                            22, 0.4
+                                        ]
+                                    );
+                                }
+                            });
+
+                            dateSpan.classList.add('active');
+                        }
+                    };
+
+                    const handleDateBlur = () => {
+                        this.markers.forEach((markerData, id) => {
+                            const markerDate = new Date(markerData.timestamp);
+                            const markerDateStr = markerDate.toLocaleDateString('az-AZ', {
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit'
+                            });
+                            
+                            if (markerData.originalLocation.name === city && markerDateStr === date) {
+                                const markerElement = markerData.marker.getElement();
+                                markerElement.style.transform = markerElement.style.transform.replace(' scale(1.5)', '');
+                                markerElement.style.zIndex = '';
+
+                                if (markerData.impactCircle) {
+                                    // Reset impact radius
+                                    this.map.setPaintProperty(
+                                        markerData.impactCircle.gradientLayerId,
+                                        'fill-opacity',
+                                        [
+                                            'interpolate',
+                                            ['linear'],
+                                            ['zoom'],
+                                            0, 0.5,
+                                            22, 0.2
+                                        ]
+                                    );
+                                }
+                            }
+                        });
+
+                        dateSpan.classList.remove('active');
+                    };
+
+                    dateSpan.addEventListener('mouseenter', handleDateFocus);
+                    dateSpan.addEventListener('mouseleave', handleDateBlur);
+                    dateSpan.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        handleDateFocus();
+                    });
+
+                    datesContainer.appendChild(dateSpan);
+                });
+                
+                // Assemble the list item
+                li.appendChild(cityName);
+                li.appendChild(datesContainer);
+                ul.appendChild(li);
+
+                // Add hover and click interactions for the city
+                const handleCityFocus = () => {
+                    // Find all markers for this city
+                    const cityMarkers = [];
+                    this.markers.forEach((markerData, id) => {
+                        if (markerData.originalLocation.name === city) {
+                            cityMarkers.push({
+                                id,
+                                location: markerData.originalLocation,
+                                marker: markerData.marker,
+                                impactCircle: markerData.impactCircle
+                            });
+                        }
+                    });
+
+                    if (cityMarkers.length > 0) {
+                        // Calculate the center point if there are multiple markers
+                        let centerLat = 0;
+                        let centerLon = 0;
+                        cityMarkers.forEach(marker => {
+                            centerLat += marker.location.lat;
+                            centerLon += marker.location.lon;
+                        });
+                        centerLat /= cityMarkers.length;
+                        centerLon /= cityMarkers.length;
+
+                        // Fly to the center point
+                        this.map.flyTo({
+                            center: [centerLon, centerLat],
+                            zoom: 10,
+                            duration: 1000
+                        });
+
+                        // Highlight all markers for this city
+                        cityMarkers.forEach(marker => {
+                            const markerElement = marker.marker.getElement();
+                            markerElement.style.transform = `${markerElement.style.transform} scale(1.3)`;
+                            markerElement.style.zIndex = '1000';
+
+                            if (marker.impactCircle) {
+                                // Highlight impact radius
+                                this.map.setPaintProperty(
+                                    marker.impactCircle.gradientLayerId,
+                                    'fill-opacity',
+                                    [
+                                        'interpolate',
+                                        ['linear'],
+                                        ['zoom'],
+                                        0, 0.7,
+                                        22, 0.4
+                                    ]
+                                );
+                            }
+                        });
+                    }
+                };
+
+                const handleCityBlur = () => {
+                    // Reset all markers for this city
+                    this.markers.forEach((markerData, id) => {
+                        if (markerData.originalLocation.name === city) {
+                            const markerElement = markerData.marker.getElement();
+                            markerElement.style.transform = markerElement.style.transform.replace(' scale(1.3)', '');
+                            markerElement.style.zIndex = '';
+
+                            if (markerData.impactCircle) {
+                                // Reset impact radius
+                                this.map.setPaintProperty(
+                                    markerData.impactCircle.gradientLayerId,
+                                    'fill-opacity',
+                                    [
+                                        'interpolate',
+                                        ['linear'],
+                                        ['zoom'],
+                                        0, 0.5,
+                                        22, 0.2
+                                    ]
+                                );
+                            }
+                        }
+                    });
+                };
+
+                // Add event listeners for the city
+                li.addEventListener('mouseenter', handleCityFocus);
+                li.addEventListener('mouseleave', handleCityBlur);
+                li.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    handleCityFocus();
+                });
+            });
+    }
+
+    initializeFilters() {
+        // Add event listeners for filter checkboxes
+        const filterOptions = document.querySelectorAll('#weapon-filters input[type="checkbox"]');
+        filterOptions.forEach(checkbox => {
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked) {
+                    this.activeFilters.add(checkbox.value);
+                } else {
+                    this.activeFilters.delete(checkbox.value);
+                }
+                this.applyFilters();
+            });
+        });
+
+        // Add event listeners for filter buttons
+        document.getElementById('select-all-filters').addEventListener('click', () => {
+            filterOptions.forEach(checkbox => {
+                checkbox.checked = true;
+                this.activeFilters.add(checkbox.value);
+            });
+            this.applyFilters();
+        });
+
+        document.getElementById('clear-all-filters').addEventListener('click', () => {
+            filterOptions.forEach(checkbox => {
+                checkbox.checked = false;
+                this.activeFilters.clear();
+            });
+            this.applyFilters();
+        });
+    }
+
+    applyFilters() {
+        console.log('Applying filters:', Array.from(this.activeFilters));
+        
+        this.markers.forEach((markerData, id) => {
+            const { marker, impactCircle, weaponTypes } = markerData;
+            if (!marker) return;
+
+            const markerElement = marker.getElement();
+            if (!markerElement) return;
+
+            // If no weapon types or no active filters, hide the marker
+            if (!weaponTypes || weaponTypes.length === 0 || this.activeFilters.size === 0) {
+                markerElement.style.display = 'none';
+                this.updateImpactCircleVisibility(impactCircle, false);
+                return;
+            }
+
+            // Show marker if any of its weapon types match active filters
+            const shouldShow = weaponTypes.some(type => 
+                type && this.activeFilters.has(type.trim())
+            );
+
+            markerElement.style.display = shouldShow ? 'block' : 'none';
+            this.updateImpactCircleVisibility(impactCircle, shouldShow);
+        });
+    }
+            
+    updateImpactCircleVisibility(impactCircle, isVisible) {
+        if (!impactCircle) return;
+            
+                ['gradientLayerId', 'outlineLayerId', 'rippleLayerId'].forEach(layerId => {
+            const layer = impactCircle[layerId];
+            if (layer && this.map.getLayer(layer)) {
+                        this.map.setLayoutProperty(
+                    layer,
+                            'visibility',
+                    isVisible ? 'visible' : 'none'
+                        );
+            }
+        });
+    }
+
+    zoomToLocation(lat, lon, zoomLevel = 12) {
+        if (!this.map) return;
+        
+        this.previousView = {
+            center: this.map.getCenter(),
+            zoom: this.map.getZoom()
+        };
+
+        this.map.flyTo({
+            center: [lon, lat],
+            zoom: zoomLevel,
+            duration: 800
+        });
+    }
+
+    resetZoom() {
+        if (!this.map || !this.previousView) return;
+        
+        this.map.flyTo({
+            center: this.previousView.center,
+            zoom: this.previousView.zoom,
+            duration: 800
+        });
+    }
+} 
