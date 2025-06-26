@@ -178,7 +178,7 @@
                 transform: scaleY(1);
             }
             100% {
-                opacity: 0;
+            opacity: 0;
                 transform: scaleY(1.5);
             }
         }
@@ -186,7 +186,7 @@
 </head>
 <body>
     <nav class="side-navbar">
-        <button class="menu-toggle">
+        <button class="menu-toggle" id="menu-toggle">
             <div class="hamburger">
                 <span></span>
             </div>
@@ -250,79 +250,6 @@
         </a>
     </div>
 
-    <!-- Data Entry Form -->
-    <div id="data-entry-form" class="data-entry-form">
-        <h2>Add New Incident</h2>
-        <form id="incident-form">
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="country">Attacker</label>
-                    <select id="country" required>
-                        <option value="1">Iran</option>
-                        <option value="2">Israel</option>
-                        <option value="3">USA</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="incident-date">Date</label>
-                    <input type="date" id="incident-date" required>
-                </div>
-            </div>
-
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="target-city">Target City</label>
-                    <input type="text" id="target-city" list="cities-list" autocomplete="off" required>
-                    <datalist id="cities-list"></datalist>
-                </div>
-                <div class="form-group">
-                    <label for="specific-target">Specific Target/Area</label>
-                    <input type="text" id="specific-target" placeholder="e.g., Military Base, Airport, Residential Area, Shopping Mall" required>
-                </div>
-            </div>
-
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="weapon-type">Weapon Types</label>
-                    <select id="weapon-type" multiple required>
-                        <option value="Missile">Missile</option>
-                        <option value="Drone">Drone</option>
-                        <option value="Airstrike">Airstrike</option>
-                        <option value="Artillery">Artillery</option>
-                        <option value="Bomb">Bomb</option>
-                        <option value="Mossad Targeted Killings">Mossad Targeted Killings</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="detailed-weapon">Detailed Weapon Info</label>
-                    <input type="text" id="detailed-weapon" placeholder="e.g., Shahed-136, Fateh-110, etc.">
-                </div>
-            </div>
-
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="impact-radius">Impact Radius (meters)</label>
-                    <input type="number" id="impact-radius" min="50" value="500" required>
-                </div>
-            </div>
-
-            <div class="form-row">
-                <div class="form-group half">
-                    <label for="casualties-dead">Deaths</label>
-                    <input type="text" id="casualties-dead" placeholder="Enter number or 'No Info', 'Unknown', etc.">
-                </div>
-                <div class="form-group half">
-                    <label for="casualties-wounded">Wounded</label>
-                    <input type="text" id="casualties-wounded" placeholder="Enter number or 'No Info', 'Unknown', etc.">
-                </div>
-            </div>
-
-            <div class="form-actions">
-                <button type="button" class="cancel-button">Cancel</button>
-                <button type="submit" class="submit-button">Add Incident</button>
-            </div>
-        </form>
-    </div>
 
     <div class="container">
         <div id="map"></div>
@@ -511,6 +438,34 @@
             </div>
             <div class="modal-footer">
                 <button class="view-source-btn" id="viewSourceBtn">View Source</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- About Panel -->
+    <div class="about-panel">
+        <div class="about-content">
+            <div class="about-header">
+                <img src="img/terawise_labs_logo.png" alt="Terawise Labs Logo" class="about-logo">
+                <button class="close-about-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="about-body">
+                <h2>About This Project</h2>
+                <p>This project was developed by Terawise Labs, led by a 15-year-old developer passionate about AI and global events.
+
+                    The website aims to provide a visual and informative representation of the Iran–Israel war by marking all verified attack locations on an interactive map.
+                    Users can filter by weapon type, change map styles, and read the latest headlines related to the conflict.
+                    
+        
+                    
+                    This project is completely independent and built to show how technology can help people better understand complex events.</p>
+                <div class="about-links">
+                    <a href="https://terawiselab.com" target="_blank" class="website-link">Visit Our Website</a>
+                </div>
             </div>
         </div>
     </div>
@@ -960,6 +915,35 @@
             document.addEventListener('click', (e) => {
                 if (e.target.classList.contains('show')) {
                     closeAllPanels();
+                }
+            });
+
+            // About Panel Functionality
+            const menuToggle = document.getElementById('menu-toggle');
+            const aboutPanel = document.querySelector('.about-panel');
+            const closeAboutBtn = document.querySelector('.close-about-btn');
+
+            menuToggle.addEventListener('click', () => {
+                aboutPanel.classList.add('show');
+            });
+
+            closeAboutBtn.addEventListener('click', () => {
+                aboutPanel.classList.remove('show');
+            });
+
+            // Close about panel when clicking outside
+            document.addEventListener('click', (e) => {
+                if (aboutPanel.classList.contains('show') && 
+                    !aboutPanel.contains(e.target) && 
+                    !menuToggle.contains(e.target)) {
+                    aboutPanel.classList.remove('show');
+                }
+            });
+
+            // Handle escape key
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && aboutPanel.classList.contains('show')) {
+                    aboutPanel.classList.remove('show');
                 }
             });
         }
